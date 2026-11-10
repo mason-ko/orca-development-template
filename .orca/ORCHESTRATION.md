@@ -86,36 +86,70 @@ express.
 5. After three consecutive empty waits, stop blind waiting and enumerate:
    `orca orchestration worker-list --run <run_id> --include-remote --json`.
    Act on each row's `projection.attention`, `projection.attention.requiresAction`, and
-   literal `projection.nextAction`; page while `page.hasMore` with `--cursor`.
-6. Before ending the turn, finish Settlement Accounting (below) and verify
+   literal `projection.nextAction`; page while `page.hasMore` with `--cursor`. Classify
+   every row against §Worker recovery: state model before acting; `UNVERIFIABLE` never
+   authorizes stop/abandon/retry/release and never a re-dispatch — escalate instead.
+6. Before ending the turn, finish terminal cleanup on both paths (§Dispatch settlement
+   and terminal cleanup) and verify
    `orca orchestration worker-list --run <run_id> --terminal-state reclaimable --json`
    returns none.
 
 Never end the Coordinator turn with an unacknowledged Delivery or a reclaimable terminal.
 
-## Settlement accounting
+## Dispatch settlement and terminal cleanup
 
-A valid `worker_done` settles the Task and Dispatch automatically. Do **not** follow it
-with `task-update --status completed`.
+Two cleanup paths with different triggers. **A failed `worker-start` is never an accepted
+settlement**; do not apply Path A rules to it, and do not apply Path B reasoning to a
+completed Worker.
 
-After each accepted settlement, choose exactly one next owner for that worker terminal:
+### Path A — normal Worker completion (`worker_done` received)
 
-1. **Reuse** — the same agent has immediate follow-up work: recover the proven handle via
-   `orca orchestration worker-show --dispatch <dispatch_id> --json`, then dispatch the next
-   Task with `--terminal <handle>`. This is the only sanctioned exception to the
-   fresh-session rule and must be recorded by the Coordinator.
-2. **Retain** — `orca orchestration worker-retain --dispatch <dispatch_id> --json` only
-   when the user explicitly asked to keep the settled terminal live.
-3. **Release** — `orca orchestration worker-release --dispatch <dispatch_id> --json`.
-   Release is post-settlement cleanup authorized **only by an accepted settlement**. It is
-   not a cancellation tool: never release because of a timeout, idle TUI, heartbeat,
-   unanswered question, or stale report. Follow `release_pending` / `release_unknown`
-   receipts' recovery actions; never substitute a terminal close.
+1. The Worker runs and sends exactly one `worker_done` (`--outcome succeeded|failed`).
+2. The accepted `worker_done` settles the Task and Dispatch automatically. Do **not**
+   follow it with `task-update --status completed`.
+3. Choose exactly one next owner for that worker terminal:
+   - **Reuse** — the same agent has immediate follow-up work: recover the proven handle
+     via `orca orchestration worker-show --dispatch <dispatch_id> --json`, then dispatch
+     the next Task with `--terminal <handle>`. This is the only sanctioned exception to
+     the fresh-session rule and must be recorded by the Coordinator.
+   - **Retain** — `orca orchestration worker-retain --dispatch <dispatch_id> --json` only
+     when the user explicitly asked to keep the settled terminal live.
+   - **Release** — `orca orchestration worker-release --dispatch <dispatch_id> --json`,
+     authorized on Path A by the accepted settlement. It is not a cancellation tool:
+     never release to stop a running Worker, and never release because of a timeout,
+     idle TUI, heartbeat gap, unanswered question, or unverifiable status.
+4. Follow `release_pending` / `release_unknown` receipts' recovery actions; never
+   substitute a terminal close. Release archives readable output, so `worker-read` still
+   works afterwards.
 
-Release archives readable output, so `worker-read` still works afterwards. Verify reported
-work with `orca orchestration worker-read --dispatch <dispatch_id> --source auto --json`
-plus repository/diff inspection — not every worker has a terminal, and `worker-read` is
-the supported read path either way.
+### Path B — Worker start failed (no `worker_done` exists)
+
+`worker-start` exits 0 only for `ready`; a non-zero exit is a start failure, not a
+settlement. Never treat it as one, and never relaunch blindly.
+
+1. Read the failure receipt: `failedStage`, `residualResources`, and the recovery
+   commands it names.
+2. Enumerate residuals: `orca orchestration worker-list --run <run_id> --json` (and
+   `worker-show` where the receipt names a Dispatch). A start that created a terminal
+   before failing still owns it: `worker-list` reports that row as `reclaimable` and the
+   receipt names `worker-release` for that exact terminal. Release it through that
+   receipt-driven cleanup — this is Path B residual cleanup, not Path A settlement — and
+   never close terminals by hand.
+3. Verify Task and Dispatch state (`task-list --json`,
+   `dispatch-show --task <task_id> --json`) and confirm no live duplicate of the attempt
+   exists.
+4. Retry only per §Retry and rework (`--retry-of` on a positively proven failed attempt;
+   a `--retry-of` replacement releases the failed Worker's still-owned terminal the same
+   receipt-driven way). If the receipt names no safe cleanup action or residue is
+   unaccounted for, **escalate to the user** instead of restarting.
+
+### Verification and turn-end gate (both paths)
+
+Verify reported work (Path A) with `orca orchestration worker-read --dispatch <dispatch_id>
+--source auto --json` plus repository/diff inspection — not every Worker has a terminal,
+and `worker-read` is the supported read path either way. Before ending the Coordinator
+turn, `orca orchestration worker-list --run <run_id> --terminal-state reclaimable --json`
+must return none; Path B residuals count toward this gate too.
 
 ## Fresh-session rule
 
@@ -184,11 +218,12 @@ authoritative. Invariants:
   retrying and escalate to the user with evidence. Do not route around the breaker with a
   new Run, Task, or unrelated Dispatch. A Worker's own `failed` report does not count
   toward the breaker; failed starts do.
-- `worker-start` exits 0 only for `ready`. On a non-zero exit read the receipt's
-  `failedStage`, `residualResources`, and recovery commands; never relaunch blindly while
-  residual resources are unaccounted for. A start that failed after creating a terminal
-  still owns it: release it per its receipt (`worker-list` reports the row as
-  `reclaimable`).
+- `worker-start` exits 0 only for `ready`. A non-zero exit is a **start failure, not an
+  accepted settlement**: handle it as Path B in §Dispatch settlement and terminal cleanup
+  (read `failedStage`/`residualResources`/recovery commands, enumerate residuals, clean
+  up only via the receipt-named action). Never relaunch blindly while residual resources
+  are unaccounted for; if no safe cleanup action is confirmed, escalate instead of
+  restarting.
 
 ## Run resume
 
@@ -205,33 +240,57 @@ Run binding lives in the calling terminal; a restarted Coordinator starts unboun
    enumerates every Dispatch this runtime has ever recorded and buries the live ones;
    Run-scoped defaults read nothing.
 
-## Stuck / failed worker recovery
+## Worker recovery: state model
 
-Do not treat silence as death. Stop, abandon, retry, or release only on **positive proof
-the agent stopped**: an `exited` liveness verdict from `worker-list`, your own observation
-of process exit, or a `worker-read` transcript whose final agent turn sent no
-`worker_done`. `unverifiable` is absence — keep waiting or inspecting; absence never
-authorizes action.
+Classify the Worker's state from evidence before acting. **A stop request is not process
+termination, and silence is not death.** While any attempt of a Task is in a state other
+than TERMINATED or settled, never re-dispatch that Task — a duplicate live Worker is the
+failure this model exists to prevent.
 
-- `worker-show --dispatch <id> --json` reports PTY liveness and `observation.agentWait`;
-  a worker parked on a human prompt is healthy, not failed. `worker-list`'s
-  `projection.liveness` is the fleet verdict for the agent.
-- `outcome_unknown`: inspect, then choose explicitly —
-  `orca orchestration worker-stop --dispatch <dispatch_id> --json` (fences and closes only
-  the proven owned terminal; receipt `processAction` says what happened; `stop_unknown`
-  exits 1 — inspect `worker-show` before acting further) or
-  `orca orchestration worker-abandon --dispatch <dispatch_id> --json` (fences orchestration
-  while keeping possibly-live resources; performs no process/filesystem action).
-- Cancel a Task: settle its worker first, then
-  `orca orchestration task-update --id <task_id> --status failed --result cancelled --json`.
-  Dependents stay blocked until a `--retry-of` replacement completes it.
+| State | Evidence | Permitted actions |
+|---|---|---|
+| **RUNNING** | `worker-list` fleet verdict `live`; progress advancing (heartbeat/turn activity; `worker-read` tail moves between reads) | Keep waiting; optionally bounded `worker-read` |
+| **UNRESPONSIVE** | fleet verdict `live` but no progress past a checkpoint; `worker-show --dispatch <id> --json` shows `observation.agentWait` (parked on a human prompt — **healthy, not failed**) or a stalled transcript tail | Inspect first; answer the prompt or escalate the question. Orca's canonical loop prefers waiting over stopping a live Worker: use `worker-stop` here only as an explicit, recorded recovery/cancellation decision (with user approval when the cancellation is risky). The stop fences the Dispatch; it does not prove the process exited |
+| **STOP_REQUESTED** | `worker-stop` receipt returned with `processAction: none|unknown` or `stop_unknown` (exit 1) — close requested/attempted, exit unproven | Re-verify with `worker-show` and `worker-list`. `processAction: closed_agent_terminal` means Orca issued the close (do not also run terminal close) but the exit verdict still must be read back. While still unproven, treat as UNVERIFIABLE, not TERMINATED |
+| **TERMINATED** | positive process-exit proof: an `exited` fleet verdict, observed process exit, or a `worker-read` transcript that positively shows the agent's final turn ended without sending `worker_done` — only after checking `contentComplete`, `clipping`, and `warnings`, and corroborated by `worker-list`/`worker-show` | Inspect residual resources (`worker-list --run <run_id> --json`, receipts) and Task/Dispatch state (`task-list`, `dispatch-show`), then clean up per receipts (§Dispatch settlement and terminal cleanup Path B) or retry per §Retry and rework |
+| **UNVERIFIABLE** | `missing_status`, `host_unavailable`, `capability_unsupported`, remote contact loss, or an uncorroborated transcript signal — absence of trustworthy status, not evidence of death | **Never** stop, abandon, retry, release, or re-dispatch. Keep waiting where possible; otherwise escalate to the user with IDs and receipts. Do not loop |
+
+Rules:
+
+- Liveness layering: `worker-list`'s `projection.liveness` is the fleet verdict for the
+  agent; `worker-show`'s `observation.status` is PTY liveness only (a live terminal can
+  still hold a dead or stuck agent). When they disagree, the fleet verdict decides —
+  unless the fleet row is `unverifiable` for a client-side gap (`missing_status`,
+  `host_unavailable`, `capability_unsupported`), where a `worker-show` verdict sourced
+  from the execution host is the better evidence. Either command's `unverifiable`
+  authorizes nothing.
+- `worker_done` absent from a bounded `worker-read` result proves nothing by itself:
+  output may be clipped, still running, or read from the wrong source. Absence is
+  absence; it only feeds the classification above.
+- `worker-stop --dispatch <dispatch_id> --json` fences one Dispatch and stops its
+  supervised agent terminal. It never deletes the worktree, setup terminals, or unrelated
+  processes. Its exit code and `processAction` describe the *request*, not the outcome;
+  STOP_REQUESTED must be re-checked before any next action.
+- `worker-abandon --dispatch <dispatch_id> --json` fences orchestration **without
+  claiming the process stopped**: it performs no process or filesystem action and retains
+  all possibly-live resources. Per the installed recovery reference, when it settles a
+  Worker it retains the owned terminal like `worker-retain`, so Orca stops owing its
+  release. Use it when fencing must be recorded but a stop cannot be proven or is
+  unwanted; record the possibly-live resources explicitly.
+- Cancel a Task: settle its Dispatch first via `worker-stop` or `worker-abandon` (per the
+  state above), then `orca orchestration task-update --id <task_id> --status failed
+  --result cancelled --json`. Dependents stay blocked until a `--retry-of` replacement
+  completes it.
+- An `outcome_unknown` attempt (receipt-level: start outcome not established): inspect,
+  then choose explicitly between `worker-stop` and `worker-abandon` per the receipt's
+  recovery commands; do not retry while its outcome is unknown.
 - Lost mutation response: `orca orchestration request-show --request <request_id> --json`
   (read-only). `completed` → read the recorded receipt; `pending` → replay the original
   command with `--retry-request <request_id>`; `absent` is not proof nothing happened —
   inspect Task/Dispatch/terminal before retrying. Every orchestration mutation accepts
   `--retry-request <id>` so Orca replays instead of starting a duplicate.
-- Unrecoverable state: escalate to the user with Task/Dispatch IDs, receipts, and residual
-  resources. Do not loop.
+- Unrecoverable state: escalate to the user with Task/Dispatch IDs, receipts, and
+  residual resources. Do not loop.
 
 For details load `orca skills get orchestration --reference references/recovery-and-cleanup.md`.
 

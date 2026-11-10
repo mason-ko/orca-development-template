@@ -64,5 +64,7 @@ Send exactly one `worker_done` for the dispatch, following the injected preamble
   QA) find the artifact without manual cross-referencing.
 
 A report is not a substitute for `worker_done`, and `worker_done` is not approval: the
-Coordinator evaluates the report and settles the terminal per
-`.orca/ORCHESTRATION.md` §Settlement accounting.
+Coordinator evaluates the report and settles the terminal per `.orca/ORCHESTRATION.md`
+§Dispatch settlement and terminal cleanup (Path A). A dispatch that never started has no
+report and no `worker_done`: the Coordinator handles it as a start failure (Path B), not
+as a settlement.

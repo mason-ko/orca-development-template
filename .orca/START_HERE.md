@@ -35,8 +35,9 @@ defines the operating rules; this file only sequences them.
 9. Follow `.orca/ORCHESTRATION.md` §Coordinator message loop: wait with
    `check --wait --types "worker_done,escalation,question" --timeout-ms <ms> --json`,
    process each Delivery, acknowledge with `check --ack <delivery_id>`, repeat until the
-   inbox drains. Perform §Settlement accounting after each settled Dispatch. Do not end
-   your turn with an unacknowledged Delivery or a reclaimable terminal.
+   inbox drains. Handle terminal cleanup per §Dispatch settlement and terminal cleanup:
+   Path A after each settled Dispatch, Path B for failed starts. Do not end your turn
+   with an unacknowledged Delivery or a reclaimable terminal.
 
 ## First-run behavior
 
@@ -55,8 +56,9 @@ On every resumed Coordinator session:
   an ID that does not exist locally.
 - Consume the inbox per the Coordinator message loop: process every message, then ack;
   an unacknowledged Delivery replays and hides newer mail.
-- Check for stuck or failed workers per `.orca/ORCHESTRATION.md` §Stuck / failed worker
-  recovery before dispatching anything new.
+- Check for stuck or failed workers per `.orca/ORCHESTRATION.md` §Worker recovery:
+  state model before dispatching anything new; `UNVERIFIABLE` ⇒ escalate, never
+  re-dispatch.
 - Verify active dispatches (`dispatch-show`, `worker-list --run <run_id>`) before any
   re-dispatch; never duplicate an active attempt.
 - Resume only pending/ready work; Orca runtime records outrank stale prose.

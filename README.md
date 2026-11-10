@@ -161,7 +161,13 @@ make that safe.
   and the Coordinator must not re-complete the Task via `task-update`.
 - After each settlement the Coordinator chooses exactly one terminal owner: reuse
   (documented exception to the fresh-session rule), `worker-retain`, or `worker-release`.
-  Release is post-settlement cleanup, never cancellation.
+  Release is post-settlement cleanup, never cancellation. A failed `worker-start` is
+  not a settlement: clean its residual terminal only through the receipt / `worker-list`
+  reclaimable path (Path B).
+- `worker-stop` is a fencing request, not proof the process exited — the exit must be
+  re-verified from the stop receipt and `worker-list`/`worker-show`. A Worker whose state
+  is `UNVERIFIABLE` is never stopped, retried, or re-dispatched: the Coordinator
+  escalates. Tasks are never re-dispatched while an attempt may still be live.
 - Retry a failed dispatch with `worker-start --task <id> --retry-of <dispatch_id>`
   (placement re-specified). Orca circuit-breaks after three failed starts; escalate then,
   never loop.

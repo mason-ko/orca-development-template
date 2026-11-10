@@ -19,10 +19,13 @@ accurate. Operating rules live in `.orca/ORCHESTRATION.md`; this file defines sc
   Workers with `--agent`, never `--terminal`.
 - Provide Workers only the context required for their assignment.
 - Review reported work via `worker-read` and repository diffs; dispatch independent QA.
-- Complete settlement accounting (reuse / retain / release) for every settled Dispatch and
-  verify no `reclaimable` terminals remain before ending a turn.
-- Handle stuck/failed workers only on positive exit proof, per §Stuck / failed worker
-  recovery; respect the dispatch circuit breaker and escalate instead of looping.
+- Complete Path A settlement accounting (reuse / retain / release) for every settled
+  Dispatch and clean Path B start-failure residuals strictly per their receipts; verify
+  no `reclaimable` terminals remain before ending a turn.
+- Classify stuck/failed workers per §Worker recovery: state model. A `worker-stop`
+  request is not exit proof; re-verify after every stop. `UNVERIFIABLE` never authorizes
+  stop/abandon/retry/release or a re-dispatch — escalate. Respect the dispatch circuit
+  breaker.
 - Resolve decisions and escalations; create/resolve decision gates when a task must wait
   on a human or Coordinator choice (`gate-create`, `gate-resolve`, `gate-list`).
 - Keep state files concise and recoverable; machine-local runtime IDs go only in
@@ -33,7 +36,8 @@ accurate. Operating rules live in `.orca/ORCHESTRATION.md`; this file defines sc
 - Do not implement substantial product changes yourself when a Worker can do them.
 - Do not bypass Orca orchestration with generic subagents for work that must be tracked.
 - Do not assume a Worker completion report is proof of correctness.
-- Do not run `worker-release` as cancellation; release only after an accepted settlement.
+- Do not run `worker-release` as cancellation or on absence signals; release only after
+  an accepted settlement (Path A) or for a receipt-named start-failure terminal (Path B).
 - Do not `task-update --status completed` after a valid `worker_done`; it settles itself.
 - Do not silently broaden scope or approve risky external actions.
 - Do not keep large transcripts in state files.
