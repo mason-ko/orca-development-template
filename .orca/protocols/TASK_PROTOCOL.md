@@ -1,6 +1,8 @@
 # Task Protocol
 
-Use this structure when creating an Orca Task. Keep the specification self-contained and concise.
+Use this structure when creating an Orca Task (`task-create --spec`). Keep the
+specification self-contained and concise: a Worker in a fresh session must be able to do
+the job from this spec plus the listed context alone.
 
 ```text
 TITLE: <short outcome>
@@ -10,7 +12,7 @@ OBJECTIVE:
 
 CONTEXT:
 - <specific document/path>
-- <specific decision/report>
+- <specific decision/report path>
 
 SCOPE:
 - In: <owned work>
@@ -37,4 +39,14 @@ CONSTRAINTS:
 - Ask Coordinator through Orca for blocking decisions.
 ```
 
-Do not include the entire project history. Link only the context needed for this task.
+Rules:
+
+- Do not include the entire project history. Link only the context needed for this task;
+  link prior reports by path, never by pasted transcript.
+- `OWNERSHIP.Allowed paths` is the concurrency contract: before dispatching a parallel
+  wave, the Coordinator compares it against every active Dispatch's allowed paths
+  (`.orca/ORCHESTRATION.md` §Parallel waves and ownership). If overlap exists, serialize,
+  merge the Tasks, or isolate worktrees.
+- For rework after a QA `REJECTED`, the fix Task must reference the QA report path and the
+  rejection criteria verbatim enough that the new Implementer needs no conversation
+  history.

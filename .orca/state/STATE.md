@@ -1,13 +1,17 @@
 # Project State
 
-> Compact recovery snapshot. Update after meaningful state transitions. Orca runtime records remain authoritative for live Run/Task/Dispatch status.
+> Compact recovery snapshot of project-wide facts. Orca runtime records remain
+> authoritative for live Run/Task/Dispatch status. Update after meaningful transitions.
 
 - **Project:** TODO
 - **Objective:** TODO
-- **Active Run ID:** NOT CREATED
 - **Current milestone:** M0 — Project discovery
 - **Overall status:** NOT STARTED
 - **Last updated:** YYYY-MM-DD
+
+> Machine-local runtime information — including the Orca Run ID bound to this machine —
+> lives in `.orca/local/run.md` (gitignored), not here. Never commit Run/Task/Dispatch
+> runtime IDs to shared state files.
 
 ## Active work
 - None
